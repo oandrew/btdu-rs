@@ -66,7 +66,7 @@ impl SampleTree {
                 path
             };
 
-            writeln!(w, "{:40} {:>8} {:>4.1}% {:>16}", path, v.total,  disk_fraction * 100.0, bytesize::to_string(disk_bytes, true))?;
+            writeln!(w, "{:60} {:>8} {:>4.1}% {:>16}", path, v.total,  disk_fraction * 100.0, bytesize::to_string(disk_bytes, true))?;
             v.print_internal(w, total_samples, total_length, min_disk_fraction, depth+1)?;
         }
 
