@@ -12,5 +12,5 @@ nix = "0.23.0"
 anyhow = "1.0.47"
 bytesize = "1.1.0"
 rand = "0.8.4"
-# sequence_trie = "0.3.6"
 pretty-hex = "0.2.1"
+clap = { version = "3.0.10", features = ["derive"] }
