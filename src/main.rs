@@ -148,12 +148,17 @@ impl Roots {
 
 struct BtrfsSample {
     total_samples: u64,
+    bytes_per_sample: f64,
     sample_tree: SampleTree,
 }
 
 impl Default for BtrfsSample {
     fn default() -> Self {
-        Self { total_samples: 0, sample_tree: Default::default() }
+        Self { 
+            total_samples: 0, 
+            bytes_per_sample: 0.0,
+            sample_tree: Default::default() 
+        }
     }
 }
 
@@ -168,8 +173,54 @@ impl BtrfsSample {
         self.sample_tree.sub(&other.sample_tree);
     }
 
-    fn print<W: fmt::Write>(&self, w: &mut W, bytes_per_sample: f64, min_disk_fraction: Option<f64>) -> fmt::Result {
-        self.sample_tree.print(w, self.total_samples, bytes_per_sample, min_disk_fraction)
+    fn print<W: fmt::Write>(&self, w: &mut W,  min_disk_fraction: Option<f64>) -> fmt::Result {
+        self.sample_tree.print(w, self.total_samples, self.bytes_per_sample, min_disk_fraction)
+    }
+}
+
+struct BtrfsSampleAgg {
+    max_buckets: usize,
+    bytes_per_sample_sum: f64,
+    // total_samples: u64,
+    // sample_tree: SampleTree,
+    cur: BtrfsSample,
+    buckets: VecDeque<BtrfsSample>,
+}
+
+impl BtrfsSampleAgg {
+    fn new(max_buckets: usize) -> Self {
+        Self {
+            max_buckets,
+            // total_samples: 0,
+            bytes_per_sample_sum: 0.0,
+
+            cur: BtrfsSample::default(),
+            // sample_tree: SampleTree::new(),
+            buckets: VecDeque::new(),
+        }
+    }
+
+    fn add(&mut self, sample: BtrfsSample) -> &BtrfsSample {
+        // self.total_samples += sample.total_samples;
+        self.bytes_per_sample_sum += sample.bytes_per_sample;
+        self.cur.total_samples += sample.total_samples;
+        self.cur.sample_tree.add(&sample.sample_tree);
+        // self.sample_tree.add(&sample.sample_tree);
+        self.buckets.push_back(sample);
+        if self.buckets.len() > self.max_buckets {
+            match self.buckets.pop_front() {
+                Some(old_sample) => {
+                    self.bytes_per_sample_sum -= old_sample.bytes_per_sample;
+                    self.cur.total_samples -= old_sample.total_samples;
+                    self.cur.sample_tree.sub(&old_sample.sample_tree);
+
+                },
+                None => {},
+            }
+        }
+        self.cur.bytes_per_sample = self.bytes_per_sample_sum / (self.buckets.len()*self.buckets.len()) as f64;
+        &self.cur
+
     }
 }
 
@@ -276,6 +327,7 @@ fn btrfs_sample(fd: i32, bytes_per_sample_hint: u64) -> Result<BtrfsSample> {
 
     Ok(BtrfsSample{
         total_samples,
+        bytes_per_sample,
         sample_tree
     })
 } 
@@ -303,21 +355,24 @@ fn main() -> Result<()> {
     let bytes_per_sample = args.resolution;
 
 
-    let mut merged_sample = BtrfsSample::default();
-    let mut sample_ring = VecDeque::new();
-    let max_recent = 60;
+    // let mut merged_sample = BtrfsSample::default();
+    // let mut sample_ring = VecDeque::new();
+    // let max_recent = 60;
+
+    let mut agg = BtrfsSampleAgg::new(60);
 
     let n = 10000;
     for i in 1..=n {
         let sample = btrfs_sample(fd, bytes_per_sample as u64)?;
-        merged_sample.add(&sample);
-        sample_ring.push_back(sample);
-        if sample_ring.len() > max_recent {
-            merged_sample.sub(&sample_ring.pop_front().unwrap());
-        }
-        println!("total_samples={}", merged_sample.total_samples);
+        let agg_sample = agg.add(sample);
+        // merged_sample.add(&sample);
+        // sample_ring.push_back(sample);
+        // if sample_ring.len() > max_recent {
+        //     merged_sample.sub(&sample_ring.pop_front().unwrap());
+        // }
+        println!("agg_samples={} agg_resolution={}", agg_sample.total_samples, agg_sample.bytes_per_sample);
         let mut buf = String::new();
-        merged_sample.print(&mut buf, bytes_per_sample / (sample_ring.len() as f64), Some(args.min_pct / 100.0))?;
+        agg_sample.print(&mut buf, Some(args.min_pct / 100.0))?;
         // sample.print(&mut buf, bytes_per_sample, Some(args.min_pct / 100.0))?;
         std::io::stdout_locked().write_all(buf.as_bytes())?;
 
