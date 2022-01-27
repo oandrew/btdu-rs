@@ -1,6 +1,8 @@
 #![feature(bigint_helper_methods)]
 #![feature(hash_raw_entry)]
 #![feature(stdio_locked)]
+#![feature(maybe_uninit_slice)]
+#![feature(maybe_uninit_uninit_array)]
 
 use std::{collections::{HashMap, HashSet, VecDeque}, env, hash::{BuildHasher, Hasher}, alloc::Layout, ops::{Deref, DerefMut, Range, RangeInclusive}, ffi::{CStr, CString}, fmt, io::Write, rc::Rc, borrow::Borrow, time::Duration};
 
@@ -135,6 +137,7 @@ impl Roots {
         match self.m.get(&root_id) {
             Some(path) => Rc::clone(path),
             None => {
+                // bug here
                 let (name, parent_id) = btrfs::find_root_backref(self.fd, root_id).unwrap();
                 let mut path = Vec::clone(&self.get_root(parent_id)); 
                 path.push(name);
@@ -280,6 +283,10 @@ fn btrfs_sample(fd: i32, bytes_per_sample_hint: u64) -> Result<BtrfsSample> {
                         for inode in inodes {
                             btrfs::ino_lookup(fd, inode.root, inode.inum, |res| match res {
                                 Ok(path) => {
+                                    // rootid=1 inode=LogicalInoItem { inum: 256, offset: 12338, root: 1 } path=""
+                                    if inode.root == 1 {
+                                        eprintln!("rootid=1 random_offset={} inode={:?} path={:?}", random_offset, inode, path);
+                                    }
                                     let root_path = roots.get_root(inode.root);
                                     let inode_path = path.to_str().unwrap().split('/').filter(|s| !s.is_empty());
                                     
