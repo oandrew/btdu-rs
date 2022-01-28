@@ -4,7 +4,7 @@
 #![feature(maybe_uninit_slice)]
 #![feature(maybe_uninit_uninit_array)]
 
-use std::{collections::{HashMap, HashSet, VecDeque}, env, hash::{BuildHasher, Hasher}, alloc::Layout, ops::{Deref, DerefMut, Range, RangeInclusive}, ffi::{CStr, CString}, fmt, io::Write, rc::Rc, borrow::Borrow, time::Duration};
+use std::{collections::{HashMap, HashSet, VecDeque}, env, hash::{BuildHasher, Hasher}, alloc::Layout, ops::{Deref, DerefMut, Range, RangeInclusive, AddAssign}, ffi::{CStr, CString}, fmt, io::Write, rc::Rc, borrow::Borrow, time::Duration};
 
 use nix::{fcntl::{self, OFlag}, libc::{self, c_char}, sys::stat::Mode};
 use nix::NixPath;
@@ -69,12 +69,11 @@ impl SampleTree {
         self.children.raw_entry_mut().from_key(k).or_insert_with(|| (k.to_owned(), SampleTree::new())).1
     }
 
-    fn add_sample<'a>(&mut self, mut path: impl Iterator<Item=impl AsRef<str>>) {
+    fn add_sample<'a>(&mut self, mut path: impl Iterator<Item=&'a str>) {
         self.total += 1;
         match path.next() {
             Some(p) => {
-                // self.children.raw_entry_mut().from_key(p.as_ref()).or_insert_with(|| (p.as_ref().to_owned(), SampleTree::new())).1.add_sample(path);
-                self.get_or_create_child(p.as_ref()).add_sample(path)
+                self.get_or_create_child(p).add_sample(path)
             },
             None => {},
         }   
@@ -227,6 +226,7 @@ impl BtrfsSampleAgg {
     }
 }
 
+
 fn btrfs_sample(fd: i32, bytes_per_sample_hint: u64) -> Result<BtrfsSample> {
     #[derive(Debug)]
     struct ChunkInfo {
@@ -267,6 +267,11 @@ fn btrfs_sample(fd: i32, bytes_per_sample_hint: u64) -> Result<BtrfsSample> {
     let mut sample_tree = SampleTree::new();
     let mut total_samples = 0;
     let mut start = std::time::Instant::now();
+
+    let mut inode_stats = HashMap::<(u64, u64), u64>::new();
+
+    let mut inode_cache = HashMap::<(u64, u64), Result<String>>::new();
+
     for _ in 0..samples {
         let random_pos = uniform.sample(&mut rng);
         let random_chunk = chunks.iter().find(|c| {
@@ -281,14 +286,20 @@ fn btrfs_sample(fd: i32, bytes_per_sample_hint: u64) -> Result<BtrfsSample> {
                 btrfs::logical_ino(fd, random_offset, false, |res| match res {
                     Ok(inodes) => {
                         for inode in inodes {
-                            btrfs::ino_lookup(fd, inode.root, inode.inum, |res| match res {
+                            inode_stats.entry((inode.root, inode.inum)).or_default().add_assign(1);
+
+                            let p = inode_cache.entry((inode.root,inode.inum)).or_insert_with(|| {
+                                btrfs::ino_lookup_sync(fd, inode.root,inode.inum)
+                            });
+                            match  p {
                                 Ok(path) => {
-                                    // rootid=1 inode=LogicalInoItem { inum: 256, offset: 12338, root: 1 } path=""
-                                    if inode.root == 1 {
-                                        eprintln!("rootid=1 random_offset={} inode={:?} path={:?}", random_offset, inode, path);
+
+                                    // free space cache item
+                                    if inode.root == btrfs::BTRFS_ROOT_TREE_OBJECTID as u64 {
+                                        return;
                                     }
                                     let root_path = roots.get_root(inode.root);
-                                    let inode_path = path.to_str().unwrap().split('/').filter(|s| !s.is_empty());
+                                    let inode_path = path.split('/').filter(|s| !s.is_empty());
                                     
                                     let full_path_it = itertools::chain!(
                                         ["DATA"],
@@ -304,7 +315,7 @@ fn btrfs_sample(fd: i32, bytes_per_sample_hint: u64) -> Result<BtrfsSample> {
                                     sample_tree.add_sample(["DATA", "ERROR", "INO_LOOKUP"].into_iter());
                                     // sample_tree.add(["ERROR", "INO_LOOKUP"].into_iter());
                                 },
-                            })
+                            }
                         }
                     },
                     Err(_) => {
@@ -331,6 +342,11 @@ fn btrfs_sample(fd: i32, bytes_per_sample_hint: u64) -> Result<BtrfsSample> {
 
     
     println!("samples={} elapsed={:?} per_sample={:?} bytes_per_sample={} resolution={}", total_samples, total_time, total_time/(total_samples as u32), bytes_per_sample, bytesize::to_string(bytes_per_sample as u64, true));
+    {
+        let unique_inodes = inode_stats.len();
+        let inode_lookups: u64 = inode_stats.values().sum();
+        println!("unique_inodes={} total_lookups={} unique_pct={}", unique_inodes, inode_lookups, (unique_inodes as f64) / (inode_lookups as f64) );
+    }
 
     Ok(BtrfsSample{
         total_samples,

@@ -73,6 +73,25 @@ pub fn ino_lookup(fd: i32, root: u64, inum: u64, mut cb: impl FnMut(Result<&CStr
     }
 }
 
+pub fn ino_lookup_sync(fd: i32, root: u64, inum: u64) -> Result<String> {
+    let mut args = btrfs_ioctl_ino_lookup_args{
+        treeid: root,
+        objectid: inum,
+        name: [0; 4080],
+    };
+
+    unsafe {
+        match ioctl::ino_lookup(fd, &mut args) {
+            Ok(_) => {
+                Ok(CStr::from_ptr(args.name.as_ptr()).to_str().unwrap().to_string())
+            },
+            Err(err) => {
+                Err(anyhow::anyhow!(err.to_string()))
+            },
+        }
+    }
+}
+
 pub struct SearchKey {
     pub objectid: u64,
     pub typ: u8,
