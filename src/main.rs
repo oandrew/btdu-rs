@@ -1,9 +1,5 @@
-#![feature(bigint_helper_methods)]
-#![feature(hash_raw_entry)]
 #![feature(stdio_locked)]
-#![feature(maybe_uninit_slice)]
-#![feature(maybe_uninit_uninit_array)]
-
+#![feature(hash_raw_entry)]
 use std::{collections::{HashMap, HashSet, VecDeque}, env, hash::{BuildHasher, Hasher}, alloc::Layout, ops::{Deref, DerefMut, Range, RangeInclusive, AddAssign}, ffi::{CStr, CString}, fmt, io::Write, rc::Rc, borrow::Borrow, time::Duration};
 
 use nix::{fcntl::{self, OFlag}, libc::{self, c_char}, sys::stat::Mode};
@@ -13,7 +9,8 @@ use clap::Parser;
 
 use rand::distributions::{Distribution, Uniform};
 
-mod btrfs;
+use btdu_rs::btrfs;
+
 
 struct SampleTree {
     total: u64,
