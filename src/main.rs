@@ -122,6 +122,21 @@ impl BtrfsSampleAgg {
     }
 }
 
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+struct BtrfsInode {
+    root: u64,
+    inode: u64,
+}
+
+impl BtrfsInode {
+    fn new(root: u64, inode: u64) -> Self {
+        Self {
+            root,
+            inode
+        }
+    }
+}
+
 
 fn btrfs_sample(fd: i32, bytes_per_sample_hint: u64) -> Result<BtrfsSample> {
     #[derive(Debug)]
@@ -164,9 +179,12 @@ fn btrfs_sample(fd: i32, bytes_per_sample_hint: u64) -> Result<BtrfsSample> {
     let mut total_samples = 0;
     let mut start = std::time::Instant::now();
 
-    let mut inode_stats = HashMap::<(u64, u64), u64>::new();
+    let mut data_inode_counts = HashMap::<BtrfsInode, u64>::new();
+    let mut data_error_logical_to_ino = 0;
+    let mut metadata = 0;
+    let mut system = 0;
 
-    let mut inode_cache = HashMap::<(u64, u64), Result<String>>::new();
+    
 
     for _ in 0..samples {
         let random_pos = uniform.sample(&mut rng);
@@ -182,65 +200,72 @@ fn btrfs_sample(fd: i32, bytes_per_sample_hint: u64) -> Result<BtrfsSample> {
                 btrfs::logical_ino(fd, random_offset, false, |res| match res {
                     Ok(inodes) => {
                         for inode in inodes {
-                            inode_stats.entry((inode.root, inode.inum)).or_default().add_assign(1);
-
-                            let p = inode_cache.entry((inode.root,inode.inum)).or_insert_with(|| {
-                                btrfs::ino_lookup_sync(fd, inode.root,inode.inum)
-                            });
-                            match  p {
-                                Ok(path) => {
-
-                                    // free space cache item
-                                    if inode.root == btrfs::BTRFS_ROOT_TREE_OBJECTID as u64 {
-                                        return;
-                                    }
-                                    let root_path = roots.get_root(inode.root);
-                                    let inode_path = path.split('/').filter(|s| !s.is_empty());
-                                    
-                                    let full_path_it = itertools::chain!(
-                                        ["DATA"],
-                                        root_path.iter().map(|s| s.as_str()),
-                                        inode_path
-                                    );  
-                                    sample_tree.add_sample(full_path_it);
-                                    // let q = root_path.iter();
-                                    // sample_tree.add_sample(q);
-                                    // sample_tree.add_sample(itertools::chain!(root_path.into_iter(), inode_path));
-                                },
-                                Err(_) => {
-                                    sample_tree.add_sample(["DATA", "ERROR", "INO_LOOKUP"].into_iter());
-                                    // sample_tree.add(["ERROR", "INO_LOOKUP"].into_iter());
-                                },
-                            }
+                            data_inode_counts.entry(BtrfsInode::new(inode.root, inode.inum)).or_default().add_assign(1);
                         }
                     },
                     Err(_) => {
-                        sample_tree.add_sample(["DATA", "ERROR", "LOGICAL_TO_INO"].into_iter());
+                        // sample_tree.add_sample(["DATA", "ERROR", "LOGICAL_TO_INO"].into_iter());
+                        data_error_logical_to_ino += 1;
                     },
                 });
 
 
             },
             btrfs::BTRFS_BLOCK_GROUP_METADATA => {
-                sample_tree.add_sample(["METADATA"].into_iter());
+                // sample_tree.add_sample(["METADATA"].into_iter());
+                metadata += 1;
 
             },
             btrfs::BTRFS_BLOCK_GROUP_SYSTEM => {
-                sample_tree.add_sample(["SYSTEM"].into_iter());
+                // sample_tree.add_sample(["SYSTEM"].into_iter());
+                system += 1;
 
             },
             _ => {
-
+                unreachable!()
             }
         };
     }
+    let mut inode_cache = HashMap::<BtrfsInode, Option<String>>::new();
+    for (inode, samples) in &data_inode_counts {
+        // free space cache item
+        if inode.root == btrfs::BTRFS_ROOT_TREE_OBJECTID as u64 {
+            continue;
+        }
+        let path = inode_cache.raw_entry_mut().from_key(inode).or_insert_with(|| {
+            match btrfs::ino_lookup_sync(fd, inode.root,inode.inode) {
+                Ok(p) => (*inode, Some(p)),
+                Err(_) => (*inode, None),
+            }
+        }).1;
+        
+        match path {
+            Some(path) => {
+                let root_path = roots.get_root(inode.root);
+                let inode_path = path.split('/').filter(|s| !s.is_empty());
+                
+                let full_path_it = itertools::chain!(
+                    ["DATA"],
+                    root_path.iter().map(|s| s.as_str()),
+                    inode_path
+                );  
+                sample_tree.add_samples(full_path_it, *samples);
+            },
+            None => {
+                sample_tree.add_samples(["DATA", "ERROR", "INO_LOOKUP"].into_iter(), *samples);
+            },
+        }
+    }
+    sample_tree.add_samples(["DATA", "ERROR", "LOGICAL_TO_INO"].into_iter(), data_error_logical_to_ino);
+    sample_tree.add_samples(["METADATA"].into_iter(), metadata);
+    sample_tree.add_samples(["SYSTEM"].into_iter(), system);
     let total_time = start.elapsed();
 
     
     println!("samples={} elapsed={:?} per_sample={:?} bytes_per_sample={} resolution={}", total_samples, total_time, total_time/(total_samples as u32), bytes_per_sample, bytesize::to_string(bytes_per_sample as u64, true));
     {
-        let unique_inodes = inode_stats.len();
-        let inode_lookups: u64 = inode_stats.values().sum();
+        let unique_inodes = data_inode_counts.len();
+        let inode_lookups: u64 = data_inode_counts.values().sum();
         println!("unique_inodes={} total_lookups={} unique_pct={}", unique_inodes, inode_lookups, (unique_inodes as f64) / (inode_lookups as f64) );
     }
 
